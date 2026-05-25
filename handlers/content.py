@@ -93,64 +93,68 @@ async def _handle_add_channel_forward(update: Update, context: ContextTypes.DEFA
         except Exception:
             await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=add_channel_cancel_keyboard())
 
-    forward_origin = message.forward_origin
-
-    if not forward_origin:
-        await show_error(
-            "📨 <b>Add Channel / Group</b>\n\n"
-            "Please <b>forward a message</b> from the channel or group you want to add.\n\n"
-            "Make sure I'm already an <b>admin</b> there first!"
-        )
-        try:
-            await message.delete()
-        except Exception:
-            pass
-        return
-
-    # Extract channel info from forward_origin
-    # Telegram API types: "channel" for channels, "chat" for supergroups/groups
-    origin_type = forward_origin.type
+    # Support both PTB v20+ (forward_origin) and fallback to legacy attributes
+    forward_origin = getattr(message, "forward_origin", None)
 
     chat_id = None
     title = None
     username = None
 
-    if origin_type == "channel":
-        # Public or private channel — chat info is always present
-        chat_id  = forward_origin.chat.id
-        title    = forward_origin.chat.title
-        username = forward_origin.chat.username  # None for private channels
+    if forward_origin:
+        # PTB 20.x with Bot API 7.0+ — use forward_origin
+        origin_type = forward_origin.type
 
-    elif origin_type == "chat":
-        # Supergroup / group forward
-        sender = getattr(forward_origin, "sender_chat", None) or getattr(forward_origin, "chat", None)
-        if sender:
-            chat_id  = sender.id
-            title    = getattr(sender, "title", None) or "Unknown Group"
-            username = getattr(sender, "username", None)
+        if origin_type == "channel":
+            chat_id  = forward_origin.chat.id
+            title    = forward_origin.chat.title
+            username = forward_origin.chat.username
 
-    elif origin_type in ("user", "hidden_user"):
-        # Private channel forwards sometimes appear as hidden_user in older clients.
-        # Try message.sender_chat as a last resort (set when msg is sent on behalf of a channel).
-        sender_chat = getattr(message, "sender_chat", None)
-        if sender_chat:
-            chat_id  = sender_chat.id
-            title    = getattr(sender_chat, "title", None) or "Unknown"
-            username = getattr(sender_chat, "username", None)
-        else:
+        elif origin_type == "chat":
+            sender = getattr(forward_origin, "sender_chat", None) or getattr(forward_origin, "chat", None)
+            if sender:
+                chat_id  = sender.id
+                title    = getattr(sender, "title", None) or "Unknown Group"
+                username = getattr(sender, "username", None)
+
+        elif origin_type in ("user", "hidden_user"):
+            # Last resort: message.sender_chat (set when forwarded on behalf of a channel)
+            sender_chat = getattr(message, "sender_chat", None)
+            if sender_chat:
+                chat_id  = sender_chat.id
+                title    = getattr(sender_chat, "title", None) or "Unknown"
+                username = getattr(sender_chat, "username", None)
+
+    else:
+        # Fallback: legacy forward_* attributes (older Bot API / PTB versions)
+        forward_chat = getattr(message, "forward_from_chat", None)
+        if forward_chat:
+            chat_id  = forward_chat.id
+            title    = getattr(forward_chat, "title", None) or "Unknown"
+            username = getattr(forward_chat, "username", None)
+
+    if not chat_id:
+        # Not a channel/group forward at all
+        is_forwarded = (
+            forward_origin is not None or
+            getattr(message, "forward_from_chat", None) is not None or
+            getattr(message, "forward_from", None) is not None
+        )
+        if is_forwarded:
             await show_error(
                 "❌ <b>That's not a channel or group forward.</b>\n\n"
                 "You forwarded from a <b>personal user</b>, not a channel or group.\n\n"
                 "Go to your channel/group → tap any message → <b>Forward</b> → send it here."
             )
-            try:
-                await message.delete()
-            except Exception:
-                pass
-            return
-
-    if not chat_id:
-        await show_error("❌ Could not extract channel ID. Please try again.")
+        else:
+            await show_error(
+                "📨 <b>Add Channel / Group</b>\n\n"
+                "Please <b>forward a message</b> from the channel or group you want to add.\n\n"
+                "Make sure I'm already an <b>admin</b> there first!"
+            )
+        try:
+            await message.delete()
+        except Exception:
+            pass
         return
 
     # Check if already saved
