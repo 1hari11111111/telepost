@@ -168,32 +168,19 @@ async def _handle_add_channel_forward(update: Update, context: ContextTypes.DEFA
             pass
         return
 
-    # Verify bot has admin rights
-    # For private channels get_chat_member often raises — fall back to get_chat()
-    is_admin = False
+    # Verify bot can actually post to the channel by sending a test
+    # get_chat_member is unreliable for private channels (returns "member" even for admins)
     try:
-        bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
-        is_admin = bot_member.status in ("administrator", "creator")
+        test_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text="✅ Bot connected successfully! (This message will be deleted)",
+        )
+        await context.bot.delete_message(chat_id=chat_id, message_id=test_msg.message_id)
     except Exception as e:
-        logger.warning(f"get_chat_member failed for {chat_id}: {e} — trying get_chat fallback")
-        try:
-            await context.bot.get_chat(chat_id)
-            # If get_chat succeeds, the bot is inside the chat (admin for channels)
-            is_admin = True
-        except Exception as e2:
-            logger.error(f"get_chat also failed for {chat_id}: {e2}")
-            is_admin = False
-
-    if not is_admin:
-        await context.bot.edit_message_text(
-            chat_id=user_id,
-            message_id=control_message_id,
-            text=(
-                "❌ <b>I'm not an admin in that channel/group!</b>\n\n"
-                "Please add me as an admin with <b>Post Messages</b> permission, then forward again."
-            ),
-            parse_mode=ParseMode.HTML,
-            reply_markup=add_channel_cancel_keyboard(),
+        logger.warning(f"Bot cannot post to {chat_id}: {e}")
+        await show_error(
+            "❌ <b>I can't post to that channel/group!</b>\n\n"
+            "Please make sure I'm added as an <b>admin</b> with <b>Post Messages</b> permission, then forward again."
         )
         try:
             await message.delete()
