@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -33,7 +34,7 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_add_channel_forward(update, context, session)
         return
 
-    # ── Collect all media group items ─────────────────────────────────────────
+    # ── Collect all media group items (with delay to get all msgs) ────────────
     if message.media_group_id:
         content_type_item = get_content_type(message)
         file_id_item = None
@@ -55,12 +56,53 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "caption": message.caption or None,
             "message_id": message.message_id,
         })
+        save_session(user_id, {**existing_session, "media_group_items": group_items})
 
         if message.media_group_id in _media_group_seen:
-            # Update items list but don't show picker again
-            save_session(user_id, {**existing_session, "media_group_items": group_items})
+            # Not the first item — just saved, nothing else to do
             return
+
+        # First item seen — register this group and wait for rest to arrive
         _media_group_seen.add(message.media_group_id)
+
+        # Wait 1.5s so Telegram delivers all items in the group
+        await asyncio.sleep(1.5)
+
+        # Re-read session after delay — all items should now be collected
+        existing_session = get_session(user_id) or {}
+        group_items = existing_session.get("media_group_items", [])
+
+        # Use caption from whichever item has one (usually the last)
+        album_caption = next((i["caption"] for i in group_items if i.get("caption")), None)
+
+        # Build session for this album
+        session_data = {
+            "content_type": "photo",  # treated as album
+            "media_group_id": message.media_group_id,
+            "media_group_items": group_items,
+            "caption": album_caption,
+            "source_message_id": message.message_id,
+            "source_chat_id": message.chat_id,
+            "options": {"silent": False, "pin": False, "no_preview": False},
+            "selected_channel": None,
+            "step": "channel_select",
+            "control_message_id": None,
+        }
+
+        emoji = "🖼"
+        caption_preview = ""
+        if album_caption:
+            preview = album_caption[:80]
+            caption_preview = f"\n📝 <i>{preview}{'...' if len(album_caption) > 80 else ''}</i>"
+
+        ctrl_msg = await message.reply_text(
+            f"{emoji} <b>{len(group_items)} photos/videos received!</b>{caption_preview}\n\nWhere do you want to post this?",
+            parse_mode=ParseMode.HTML,
+            reply_markup=channel_picker_keyboard(),
+        )
+        session_data["control_message_id"] = ctrl_msg.message_id
+        save_session(user_id, session_data)
+        return
 
     # ── Build session from this message ───────────────────────────────────────
     content_type = get_content_type(message)
@@ -95,10 +137,6 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     session_data["control_message_id"] = ctrl_msg.message_id
-    # Merge any already-collected media_group_items into session
-    if message.media_group_id:
-        existing = get_session(user_id) or {}
-        session_data["media_group_items"] = existing.get("media_group_items", [])
     save_session(user_id, session_data)
 
 
