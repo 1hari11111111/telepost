@@ -208,15 +208,40 @@ async def _do_post(update, context, session, chat_id, msg_id, user_id):
     try:
         sent_message = None
 
-        # ── Media group (album) — forward as-is ──────────────────────────────
+        # ── Media group (album) — send as proper album without forward tag ──
         if media_group:
-            # For media groups we forward the original message
-            sent_message = await context.bot.forward_message(
-                chat_id=target_channel_id,
-                from_chat_id=source_chat,
-                message_id=source_msg_id,
-                disable_notification=silent,
-            )
+            media_items = session.get("media_group_items", [])
+            if media_items:
+                from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio
+                input_media = []
+                for i, item in enumerate(media_items):
+                    cap = item.get("caption") if i == 0 else None  # caption only on first item
+                    itype = item.get("type")
+                    fid   = item.get("file_id")
+                    if itype == "photo":
+                        input_media.append(InputMediaPhoto(media=fid, caption=cap))
+                    elif itype == "video":
+                        input_media.append(InputMediaVideo(media=fid, caption=cap))
+                    elif itype == "document":
+                        input_media.append(InputMediaDocument(media=fid, caption=cap))
+                    elif itype == "audio":
+                        input_media.append(InputMediaAudio(media=fid, caption=cap))
+                    else:
+                        input_media.append(InputMediaPhoto(media=fid, caption=cap))
+                sent_messages = await context.bot.send_media_group(
+                    chat_id=target_channel_id,
+                    media=input_media,
+                    disable_notification=silent,
+                )
+                sent_message = sent_messages[0] if sent_messages else None
+            else:
+                # Fallback: copy single message (no forward tag)
+                sent_message = await context.bot.copy_message(
+                    chat_id=target_channel_id,
+                    from_chat_id=source_chat,
+                    message_id=source_msg_id,
+                    disable_notification=silent,
+                )
 
         # ── Text ──────────────────────────────────────────────────────────────
         elif content_type == "text":
@@ -297,9 +322,9 @@ async def _do_post(update, context, session, chat_id, msg_id, user_id):
                 disable_notification=silent,
             )
 
-        # ── Poll — must forward (polls can't be re-created via API easily) ────
+        # ── Poll — copy without forward tag ──────────────────────────────────
         elif content_type == "poll":
-            sent_message = await context.bot.forward_message(
+            sent_message = await context.bot.copy_message(
                 chat_id=target_channel_id,
                 from_chat_id=source_chat,
                 message_id=source_msg_id,
