@@ -40,15 +40,17 @@ def main():
 
     # ── Webhook (Heroku) vs Polling (local) ───────────────────────────────────
     port = int(os.environ.get("PORT", 8443))
-    webhook_url = os.environ.get("WEBHOOK_URL", "")  # e.g. https://yourapp.herokuapp.com
+    webhook_url = os.environ.get("WEBHOOK_URL", "")
 
     if webhook_url:
         logger.info(f"Starting webhook on port {port} → {webhook_url}")
         app.run_webhook(
             listen="0.0.0.0",
             port=port,
-            webhook_url=f"{webhook_url}/{BOT_TOKEN}",
             url_path=BOT_TOKEN,
+            webhook_url=f"{webhook_url}/{BOT_TOKEN}",
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
         )
     else:
         logger.info("No WEBHOOK_URL set — starting polling (local dev mode)")
