@@ -33,10 +33,33 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_add_channel_forward(update, context, session)
         return
 
-    # ── Ignore duplicate media group triggers ──────────────────────────────────
+    # ── Collect all media group items ─────────────────────────────────────────
     if message.media_group_id:
+        content_type_item = get_content_type(message)
+        file_id_item = None
+        if content_type_item == "photo":
+            file_id_item = message.photo[-1].file_id
+        elif content_type_item == "video":
+            file_id_item = message.video.file_id
+        elif content_type_item == "document":
+            file_id_item = message.document.file_id
+        elif content_type_item == "audio":
+            file_id_item = message.audio.file_id
+
+        # Append this item to the group list in session
+        existing_session = get_session(user_id) or {}
+        group_items = existing_session.get("media_group_items", [])
+        group_items.append({
+            "type": content_type_item,
+            "file_id": file_id_item,
+            "caption": message.caption or None,
+            "message_id": message.message_id,
+        })
+
         if message.media_group_id in _media_group_seen:
-            return  # already handled the first item of this album
+            # Update items list but don't show picker again
+            save_session(user_id, {**existing_session, "media_group_items": group_items})
+            return
         _media_group_seen.add(message.media_group_id)
 
     # ── Build session from this message ───────────────────────────────────────
@@ -72,6 +95,10 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     session_data["control_message_id"] = ctrl_msg.message_id
+    # Merge any already-collected media_group_items into session
+    if message.media_group_id:
+        existing = get_session(user_id) or {}
+        session_data["media_group_items"] = existing.get("media_group_items", [])
     save_session(user_id, session_data)
 
 
