@@ -81,22 +81,26 @@ async def _handle_add_channel_forward(update: Update, context: ContextTypes.DEFA
     user_id = message.from_user.id
     control_message_id = session.get("control_message_id")
 
+    async def show_error(text: str):
+        try:
+            await context.bot.edit_message_text(
+                chat_id=user_id,
+                message_id=control_message_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=add_channel_cancel_keyboard(),
+            )
+        except Exception:
+            await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=add_channel_cancel_keyboard())
+
     forward_origin = message.forward_origin
 
     if not forward_origin:
-        # Not a forwarded message — remind user
-        await context.bot.edit_message_text(
-            chat_id=user_id,
-            message_id=control_message_id,
-            text=(
-                "📨 <b>Add Channel / Group</b>\n\n"
-                "Please <b>forward a message</b> from the channel or group you want to add.\n\n"
-                "Make sure I'm already an <b>admin</b> there first!"
-            ),
-            parse_mode=ParseMode.HTML,
-            reply_markup=add_channel_cancel_keyboard(),
+        await show_error(
+            "📨 <b>Add Channel / Group</b>\n\n"
+            "Please <b>forward a message</b> from the channel or group you want to add.\n\n"
+            "Make sure I'm already an <b>admin</b> there first!"
         )
-        # Delete the non-forwarded message
         try:
             await message.delete()
         except Exception:
@@ -105,63 +109,55 @@ async def _handle_add_channel_forward(update: Update, context: ContextTypes.DEFA
 
     # Extract channel info from forward_origin
     # Telegram API types: "channel" for channels, "chat" for supergroups/groups
-    origin_type = forward_origin.type  # "channel", "user", "hidden_user", "chat"
+    origin_type = forward_origin.type
+
+    chat_id = None
+    title = None
+    username = None
 
     if origin_type == "channel":
-        chat_id   = forward_origin.chat.id
-        title     = forward_origin.chat.title
-        username  = forward_origin.chat.username  # None for private channels
+        # Public or private channel — chat info is always present
+        chat_id  = forward_origin.chat.id
+        title    = forward_origin.chat.title
+        username = forward_origin.chat.username  # None for private channels
+
     elif origin_type == "chat":
-        # Supergroup / group forwards — info is directly on forward_origin.sender_chat
-        sender_chat = getattr(forward_origin, "sender_chat", None)
+        # Supergroup / group forward
+        sender = getattr(forward_origin, "sender_chat", None) or getattr(forward_origin, "chat", None)
+        if sender:
+            chat_id  = sender.id
+            title    = getattr(sender, "title", None) or "Unknown Group"
+            username = getattr(sender, "username", None)
+
+    elif origin_type in ("user", "hidden_user"):
+        # Private channel forwards sometimes appear as hidden_user in older clients.
+        # Try message.sender_chat as a last resort (set when msg is sent on behalf of a channel).
+        sender_chat = getattr(message, "sender_chat", None)
         if sender_chat:
             chat_id  = sender_chat.id
-            title    = sender_chat.title or "Unknown Group"
+            title    = getattr(sender_chat, "title", None) or "Unknown"
             username = getattr(sender_chat, "username", None)
         else:
-            # Fallback: some group forwards expose chat directly
-            chat_id  = getattr(forward_origin, "chat", None) and forward_origin.chat.id
-            title    = getattr(getattr(forward_origin, "chat", None), "title", "Unknown Group")
-            username = getattr(getattr(forward_origin, "chat", None), "username", None)
-    else:
-        await context.bot.edit_message_text(
-            chat_id=user_id,
-            message_id=control_message_id,
-            text=(
+            await show_error(
                 "❌ <b>That's not a channel or group forward.</b>\n\n"
-                "Please forward a message from a <b>channel or group</b>.\n\n"
-                f"<i>Detected type: {origin_type}</i>"
-            ),
-            parse_mode=ParseMode.HTML,
-            reply_markup=add_channel_cancel_keyboard(),
-        )
-        try:
-            await message.delete()
-        except Exception:
-            pass
-        return
+                "You forwarded from a <b>personal user</b>, not a channel or group.\n\n"
+                "Go to your channel/group → tap any message → <b>Forward</b> → send it here."
+            )
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            return
 
     if not chat_id:
-        await context.bot.edit_message_text(
-            chat_id=user_id,
-            message_id=control_message_id,
-            text="❌ Could not extract channel ID. Please try again.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=add_channel_cancel_keyboard(),
-        )
+        await show_error("❌ Could not extract channel ID. Please try again.")
         return
 
     # Check if already saved
     existing = get_channel(chat_id)
     if existing:
         display = channel_display_name(existing)
-        await context.bot.edit_message_text(
-            chat_id=user_id,
-            message_id=control_message_id,
-            text=f"⚠️ <b>{display}</b> is already in your channels list!",
-            parse_mode=ParseMode.HTML,
-            reply_markup=add_channel_cancel_keyboard(),
-        )
+        await show_error(f"⚠️ <b>{display}</b> is already in your channels list!")
         try:
             await message.delete()
         except Exception:
@@ -169,21 +165,20 @@ async def _handle_add_channel_forward(update: Update, context: ContextTypes.DEFA
         return
 
     # Verify bot has admin rights
-    # Use try/except carefully — some channel types raise errors even when bot IS admin
+    # For private channels get_chat_member often raises — fall back to get_chat()
+    is_admin = False
     try:
         bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
         is_admin = bot_member.status in ("administrator", "creator")
     except Exception as e:
-        # get_chat_member can fail for certain private channels or broadcast-only groups
-        # In that case, attempt a softer check by fetching chat info
+        logger.warning(f"get_chat_member failed for {chat_id}: {e} — trying get_chat fallback")
         try:
-            chat_info = await context.bot.get_chat(chat_id)
-            # If we can fetch the chat, the bot is likely a member/admin
+            await context.bot.get_chat(chat_id)
+            # If get_chat succeeds, the bot is inside the chat (admin for channels)
             is_admin = True
-            logger.warning(f"get_chat_member failed for {chat_id}, fell back to get_chat: {e}")
         except Exception as e2:
+            logger.error(f"get_chat also failed for {chat_id}: {e2}")
             is_admin = False
-            logger.error(f"Both get_chat_member and get_chat failed for {chat_id}: {e2}")
 
     if not is_admin:
         await context.bot.edit_message_text(
