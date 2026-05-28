@@ -192,16 +192,28 @@ async def _do_post(update, context, session, chat_id, msg_id, user_id):
         await query.edit_message_text("⚠️ Channel not found.")
         return
 
-    opts          = session.get("options", {})
-    silent        = opts.get("silent", False)
-    pin           = opts.get("pin", False)
-    no_preview    = opts.get("no_preview", False)
-    content_type  = session.get("content_type")
-    file_id       = session.get("file_id")
-    caption       = session.get("caption")
-    source_msg_id = session.get("source_message_id")
-    source_chat   = session.get("source_chat_id")
-    media_group   = session.get("media_group_id")
+    opts              = session.get("options", {})
+    silent            = opts.get("silent", False)
+    pin               = opts.get("pin", False)
+    no_preview        = opts.get("no_preview", False)
+    content_type      = session.get("content_type")
+    file_id           = session.get("file_id")
+    caption           = session.get("caption")
+    caption_entities  = session.get("caption_entities", [])
+    source_msg_id     = session.get("source_message_id")
+    source_chat       = session.get("source_chat_id")
+    media_group       = session.get("media_group_id")
+
+    # Rebuild MessageEntity objects from stored dicts
+    from telegram import MessageEntity
+    def _restore_entities(raw_entities):
+        restored = []
+        for e in (raw_entities or []):
+            try:
+                restored.append(MessageEntity.de_json(e, context.bot))
+            except Exception:
+                pass
+        return restored or None
 
     display = channel_display_name(channel)
 
@@ -245,9 +257,11 @@ async def _do_post(update, context, session, chat_id, msg_id, user_id):
 
         # ── Text ──────────────────────────────────────────────────────────────
         elif content_type == "text":
+            entities = _restore_entities(caption_entities)
             sent_message = await context.bot.send_message(
                 chat_id=target_channel_id,
                 text=caption or "",
+                entities=entities,
                 disable_notification=silent,
                 disable_web_page_preview=no_preview,
             )
@@ -258,6 +272,7 @@ async def _do_post(update, context, session, chat_id, msg_id, user_id):
                 chat_id=target_channel_id,
                 photo=file_id,
                 caption=caption,
+                caption_entities=_restore_entities(caption_entities),
                 disable_notification=silent,
             )
 
@@ -267,6 +282,7 @@ async def _do_post(update, context, session, chat_id, msg_id, user_id):
                 chat_id=target_channel_id,
                 video=file_id,
                 caption=caption,
+                caption_entities=_restore_entities(caption_entities),
                 disable_notification=silent,
             )
 
@@ -276,6 +292,7 @@ async def _do_post(update, context, session, chat_id, msg_id, user_id):
                 chat_id=target_channel_id,
                 document=file_id,
                 caption=caption,
+                caption_entities=_restore_entities(caption_entities),
                 disable_notification=silent,
             )
 
@@ -285,6 +302,7 @@ async def _do_post(update, context, session, chat_id, msg_id, user_id):
                 chat_id=target_channel_id,
                 audio=file_id,
                 caption=caption,
+                caption_entities=_restore_entities(caption_entities),
                 disable_notification=silent,
             )
 
@@ -294,6 +312,7 @@ async def _do_post(update, context, session, chat_id, msg_id, user_id):
                 chat_id=target_channel_id,
                 voice=file_id,
                 caption=caption,
+                caption_entities=_restore_entities(caption_entities),
                 disable_notification=silent,
             )
 
@@ -303,6 +322,7 @@ async def _do_post(update, context, session, chat_id, msg_id, user_id):
                 chat_id=target_channel_id,
                 animation=file_id,
                 caption=caption,
+                caption_entities=_restore_entities(caption_entities),
                 disable_notification=silent,
             )
 
